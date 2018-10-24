@@ -38,6 +38,14 @@ class DataSet:
 			t,i,r,no = self.ui[u][-1]
 			self.test[u] = i
 			self.test_idxs.append(no)
+	def expicit_split(self,rate=0.8,seed=888):
+		num = int(len(self.ratings)*rate)
+		idxs = np.arange(len(self.ratings))
+		np.random.seed(seed)
+		np.random.shuffle(idxs)
+		self.test_idxs = idxs[num:]
+		self.test = [(u,i,r) for u,i,r in zip(np.array(self.users)[self.test_idxs],np.array(self.items)[self.test_idxs],np.array(self.ratings)[self.test_idxs])]
+
 	def get_implicit_matrix(self):
 		"""
 		return a matrix represent implicit feedback
@@ -53,6 +61,8 @@ class DataSet:
 		data[self.test_idxs] = 0
 		return csr_matrix((data,(self.users,self.items)),shape=(self.user_count,self.item_count)).toarray()
 	def get_testdict(self):
+		return self.test
+	def get_explicittest(self):
 		return self.test
 
 

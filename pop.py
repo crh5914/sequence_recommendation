@@ -3,42 +3,36 @@
 recommendate user with item according to it's popularity
 """
 import numpy as np
-from dataset import DataSet
-from evaluate import get_hr,get_mrr,get_ndcg
-class POP:
+from leave_one_dataset import LeaveOneDataset
+from evaluate import evaluate_model
+from time import time
+class Pop:
 	def __init__(self):
 		pass
 	def fit(self,ratings):
-		self.ratings = ratings
-		self.item_count = len(ratings[0])
 		self.item_pop = np.sum(ratings,0)
-	def predict(self,test):
+	def predict(self,test,batch_size=100,verbose=0):
+		_,items = test
 		y_ = []
-		for u,tar in test.items():
-			proposals = []
-			for i,r in enumerate(self.ratings[u]):
-				if r <= 0:
-					proposals.append((i,self.item_pop[i]))
-			ranklist = [ i for i,r in sorted(proposals,key=lambda item: item[1],reverse=True)]
-			# ranklist = np.argsort(self.item_pop)[::-1]
-			y_.append(ranklist)
+		for it in items:
+			y_.append(self.item_pop[it])
 		return y_
 # test
 if __name__ == '__main__':
-	ds = DataSet('./data/ml1m.ratings','::')
-	# ds = DataSet('./data/ml100k.ratings')
-	ds.split()
-	ratings = ds.get_implicit_matrix()
-	test = ds.get_testdict()
-	pop = POP()
-	pop.fit(ratings)
-	y_ = pop.predict(test)
-	y = test.values()
-	# print(y)
-	k = 10
-	hr = get_hr(y_,y,k)
-	mrr = get_mrr(y_,y,k)
-	ndcg = get_ndcg(y_,y,k)
-	print('HR@{}:{},MRR@{}:{},ndcg@{}:{}'.format(k,hr,k,mrr,k,ndcg))
+	topK = 10
+	evaluation_threads = 1
+	ds = LeaveOneDataset()
+	ds.load('./data/ml100k')
+	model = Pop()
+	model.fit(ds.train_matrix.toarray())
+	testRatings = ds.test_pairs.values[:,:2]
+	testNegatives = ds.test_pairs.values[:,2:]
+	# Init performance
+	t1 = time()
+	(hits, ndcgs) = evaluate_model(model, testRatings, testNegatives, topK, evaluation_threads)
+	hr, ndcg = np.array(hits).mean(), np.array(ndcgs).mean()
+	#mf_embedding_norm = np.linalg.norm(model.get_layer('user_embedding').get_weights())+np.linalg.norm(model.get_layer('item_embedding').get_weights())
+	#p_norm = np.linalg.norm(model.get_layer('prediction').get_weights()[0])
+	print('Init: HR = %.4f, NDCG = %.4f\t [%.1f s]' % (hr, ndcg, time()-t1))
 
 
