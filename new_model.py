@@ -64,7 +64,7 @@ class Model:
          self.W2 = tf.Variable(tf.random_normal(shape=[fusion_dim//2,1],stddev=0.1))
          self.b2 = tf.Variable(tf.constant(0.1))
          self.f2 = tf.nn.sigmoid(tf.add(tf.matmul(self.f1,self.W2),self.b2))
-         self.log_loss = -tf.reduce_mean(tf.multiply(self.label,tf.log(self.f2)))
+         self.log_loss = -tf.reduce_mean(self.label* tf.log(tf.clip_by_value(self.f2,1e-10,1.0))+(1-self.label) * tf.log(tf.clip_by_value(1-self.f2,1e-10,1.0)))
          self.l2_loss = tf.nn.l2_loss(self.W1)
          self.l2_loss += tf.nn.l2_loss(self.b1)
          self.l2_loss += tf.nn.l2_loss(self.W2)
@@ -111,7 +111,7 @@ def generate_test_batch(train_matrix,test_pairs,user_len,num_items):
         uvec = list(np.nonzero(train_matrix[u])[0])
         padd_len = user_len - len(uvec)
         padd_uvec = uvec + [num_items]*padd_len
-        batch_users.append(padd_uvec)
+        #batch_users.append(padd_uvec)
         for j in pair[1:]:
             batch_users.append(padd_uvec)
             batch_items.append(j)
@@ -136,15 +136,16 @@ if __name__ == '__main__':
         # test
         hits = []
         ndcgs = []
-        for batch_users,batch_items in generate_test_batch(train_matrix,ds.test_pairs.values,user_len,num_items):
+        for batch_users,batch_items in generate_test_batch(train_matrix,ds.test_pairs.values,user_len,ds.num_items):
             scores = model.predict(batch_users,batch_items)
+            scores = np.reshape(scores,-1)
             ranklist = np.argsort(-scores)[:topK]
             hits.append(getHitRatio(ranklist,0))
             ndcgs.append(getNDCG(ranklist,0))
         hit = np.mean(hits)
         ndcg = np.mean(ndcgs)
         print('train epoch:',epoch,'loss:',loss)
-        print('test epoch:',epoch,'hit@{}:{},ndcg@{}:{}'.format(topK,hit.topK,ndcg))
+        print('test epoch:',epoch,'hit@{}:{},ndcg@{}:{}'.format(topK,hit,topK,ndcg))
         if hit > best_hit:
             best_hit = hit
         if ndcg > best_ndcg:
