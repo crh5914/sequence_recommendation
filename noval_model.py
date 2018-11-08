@@ -2,7 +2,7 @@ import tensorflow as tf
 import numpy as np
 from leave_one_dataset import LeaveOneDataset
 from time import time
-from evaluate import evaluate_model
+from evaluate import getHitRatio,getNDCG
 import argparse
 def parse_args():
     parser = argparse.ArgumentParser(description="Run NeuMF.")
@@ -36,11 +36,11 @@ def parse_args():
                         help='Whether to save the trained model.')
     return parser.parse_args()
 class TwoLevelAttetionModel:
-    def __init__(self,sess,num_users,num_items,num_factors,train_matrix,lr,reg_lambda,keep_prob):
+    def __init__(self,sess,num_users,num_items,num_factors,max_len,lr,reg_lambda,keep_prob):
         self.sess = sess
         self.num_users = num_users
         self.num_items = num_items
-        self.train_matrix = train_matrix
+        self.max_len = max_len
         self.num_factors = num_factors
         self.reg_lambda = reg_lambda
         self.lr = lr
@@ -50,9 +50,10 @@ class TwoLevelAttetionModel:
     def build_model(self):
         self.user = tf.placeholder(shape=[None],dtype=tf.int32)
         self.item = tf.placeholder(shape=[None],dtype=tf.int32)
+        self.backets = tf.placeholder(shape=[None,self.max_len],dtype=tf.int32)
+        self.mask = tf.placeholder(shape=[None], dtype=tf.int32)
         self.y = tf.placeholder(shape=[None],dtype=tf.float32)
         self.dropout = tf.placeholder(dtype=tf.float32)
-        self.rating_matrix = tf.Variable(tf.constant(self.train_matrix),trainable=False)
         self.item_embedding = tf.Variable(tf.random_uniform(shape=(self.num_items,self.num_factors),minval=-0.1,maxval=0.1))
         self.user_embedding = tf.Variable(tf.random_uniform(shape=(self.num_users,self.num_factors),minval=-0.1,maxval=0.1))
         self.fa_W = tf.Variable(tf.random_normal(shape=(3*self.num_factors,self.num_factors)))
@@ -63,9 +64,9 @@ class TwoLevelAttetionModel:
         self.b1 = tf.Variable(tf.constant(0.1,shape=(int(1.5*self.num_factors),)))
         self.W2 = tf.Variable(tf.random_normal(shape=(int(1.5*self.num_factors),1)))
         self.b2 = tf.Variable(tf.constant(0.1))
-        self.backets = tf.nn.embedding_lookup(self.train_matrix,self.user)
-        self.backets = tf.expand_dims(self.backets,-1)
-        self.backets_embedding = tf.multiply(self.backets,self.item_embedding)
+        self.mask_vec = tf.expand_dims(tf.cast(tf.sequence_mask(self.mask,self.max_len),dtype=float),axis=-1)
+        self.backets_embedding = tf.nn.embedding_lookup(self.item_embedding,self.backets)
+        self.backets_embedding = tf.multiply(self.mask_vec,self.backets_embedding)
         self.item_vec = tf.nn.embedding_lookup(self.item_embedding,self.item)
         self.user_vec = tf.nn.embedding_lookup(self.user_embedding,self.user)
         self.factor_attented_backets_vec = self.factor_attention(self.user_vec,self.item_vec,self.backets_embedding,self.fa_W,self.fa_b)
@@ -85,17 +86,17 @@ class TwoLevelAttetionModel:
         self.sess.run(init)
     def factor_attention(self,user_vec,item_vec,backets_vec,W,b):
         attented_backets_vec =[]
-        for i in range(self.num_items):
+        for i in range(self.max_len):
             fusion_vec = tf.concat([user_vec,item_vec,backets_vec[:,i,:]],axis=-1)
             alphas = tf.nn.softmax(tf.add(tf.matmul(fusion_vec,W),b))
             new_vec = tf.multiply(alphas,backets_vec[:,i,:])
             attented_backets_vec.append(new_vec)
         attented_vec = tf.concat(attented_backets_vec,axis=1)
-        attented_vec = tf.reshape(attented_vec,shape=(-1,self.num_items,self.num_factors))
+        attented_vec = tf.reshape(attented_vec,shape=(-1,self.max_len,self.num_factors))
         return attented_vec
     def backets_attention(self,user_vec,item_vec,backets_vec,W,b):
         betas = []
-        for i in range(self.num_items):
+        for i in range(self.max_len):
             fusion_vec = tf.concat([user_vec, item_vec, backets_vec[:, i, :]], axis=-1)
             beta = tf.nn.softmax(tf.add(tf.matmul(fusion_vec, W), b))
             betas.append(beta)
@@ -104,42 +105,35 @@ class TwoLevelAttetionModel:
         item_attention_weights = tf.expand_dims(item_attention_weights,axis=-1)
         aggregated_backet_vec = tf.reduce_sum(tf.multiply(item_attention_weights,backets_vec),axis=1)
         return aggregated_backet_vec
-    def fit(self,train_data,batch_size=128,verbose=0):
-        users,items,labels = train_data
-        for batch_u,batch_v,batch_y in self.generate_train_batch(users,items,labels,batch_size):
-            feed_dict = {self.user:batch_u,self.item:batch_v,self.y:batch_y,self.dropout:self.keep_prob}
-            _,loss,y_ = self.sess.run([self.train_opt,self.loss,self.y_],feed_dict=feed_dict)
+    def train(self,batch_users,batch_items,batch_uvecs,batch_masks,batch_labels):
+        feed_dict = {self.user:batch_users,self.item:batch_items,self.backets:batch_uvecs,self.mask:batch_masks,self.y:batch_labels,self.dropout:self.keep_prob}
+        _,loss,y_ = self.sess.run([self.train_opt,self.loss,self.y_],feed_dict=feed_dict)
         return loss
-    def predict(self,test_data,batch_size=128,verbose=0):
-        users,items = test_data
-        ys = []
-        for batch_u,batch_v in self.generate_test_batch(users,items,batch_size):
-            feed_dict = {self.user:batch_u,self.item:batch_v,self.dropout:1.0}
-            batch_y = self.sess.run(self.y_,feed_dict=feed_dict)
-            print(batch_y)
-            ys = ys + list(batch_y)
-        return ys
-    def generate_train_batch(self,users,items,labels,batch_size):
-        batch_u,batch_v,batch_y = [],[],[]
-        for u,v,y in zip(users,items,labels):
-            batch_u.append(u)
-            batch_v.append(v)
-            batch_y.append(y)
-            if len(batch_u) == batch_size:
-                yield batch_u,batch_v,batch_y
-                batch_u,batch_v,batch_y = [],[],[]
-        if len(batch_u) > 0:
-            yield batch_u,batch_v,batch_y
-    def generate_test_batch(self,users,items,batch_size):
-        batch_u,batch_v= [],[]
-        for u,v in zip(users,items):
-            batch_u.append(u)
-            batch_v.append(v)
-            if len(batch_u) == batch_size:
-                yield batch_u,batch_v
-                batch_u,batch_v = [],[]
-        if len(batch_u) > 0:
-            yield batch_u,batch_v
+    def predict(self,batch_users, batch_items, batch_uvecs, batch_masks):
+        feed_dict = {self.user:batch_users,self.item:batch_items,self.backets:batch_uvecs,self.mask:batch_masks,self.dropout:1.0}
+        y_ = self.sess.run(self.y_,feed_dict=feed_dict)
+        return y_
+    # def generate_train_batch(self,users,items,labels,batch_size):
+    #     batch_u,batch_v,batch_y = [],[],[]
+    #     for u,v,y in zip(users,items,labels):
+    #         batch_u.append(u)
+    #         batch_v.append(v)
+    #         batch_y.append(y)
+    #         if len(batch_u) == batch_size:
+    #             yield batch_u,batch_v,batch_y
+    #             batch_u,batch_v,batch_y = [],[],[]
+    #     if len(batch_u) > 0:
+    #         yield batch_u,batch_v,batch_y
+    # def generate_test_batch(self,users,items,batch_size):
+    #     batch_u,batch_v= [],[]
+    #     for u,v in zip(users,items):
+    #         batch_u.append(u)
+    #         batch_v.append(v)
+    #         if len(batch_u) == batch_size:
+    #             yield batch_u,batch_v
+    #             batch_u,batch_v = [],[]
+    #     if len(batch_u) > 0:
+    #         yield batch_u,batch_v
 def get_train_instances(train_pairs):
     user_input, item_input, labels = [],[],[]
     train_pairs = train_pairs.values
@@ -155,71 +149,92 @@ def get_train_instances(train_pairs):
             item_input.append(j)
             labels.append(0)
     return user_input, item_input, labels
+def generate_train_batch(train_matrix,train_pairs,user_len,batch_size=512):
+    batch_users,batch_items,batch_uvecs,batch_masks,batch_labels = [],[],[],[],[]
+    count = 0
+    for pair in train_pairs:
+        u,i = pair[:2]
+        uvec = list(np.nonzero(train_matrix[u])[0])
+        padd_len = user_len - len(uvec)
+        padd_uvec = uvec + [0]*padd_len
+        batch_users.append(u)
+        batch_uvecs.append(padd_uvec)
+        batch_items.append(i)
+        batch_masks.append(len(uvec))
+        batch_labels.append(1)
+        count += 1
+        for j in pair[2:]:
+            batch_users.append(u)
+            batch_uvecs.append(padd_uvec)
+            batch_items.append(j)
+            batch_masks.append(len(uvec))
+            batch_labels.append(0)
+            count += 1
+        if count >= batch_size:
+            yield batch_users,batch_items,batch_uvecs,batch_masks,batch_labels
+            batch_users, batch_items, batch_uvecs, batch_masks, batch_labels = [], [], [], [], []
+            count = 0
+    if count >= 0:
+        yield batch_users, batch_items, batch_uvecs, batch_masks, batch_labels
+
+def generate_test_batch(train_matrix,test_pairs,user_len):
+    for pair in test_pairs:
+        batch_users, batch_items, batch_uvecs, batch_masks = [], [], [], []
+        u = pair[0]
+        uvec = list(np.nonzero(train_matrix[u])[0])
+        padd_len = user_len - len(uvec)
+        padd_uvec = uvec + [0]*padd_len
+        for j in pair[1:]:
+            batch_users.append(u)
+            batch_uvecs.append(padd_uvec)
+            batch_masks.append(len(uvec))
+            batch_items.append(j)
+        yield batch_users, batch_items, batch_uvecs, batch_masks
 if __name__ == '__main__':
-    args = parse_args()
-    num_epochs = args.epochs
-    batch_size = args.batch_size
-    num_factors = args.num_factors
-    num_negatives = args.num_neg
-    reg_lambda = args.reg_lambda
-    lr = args.lr
-    keep_prob = args.keep_prob
-    learner = args.learner
-    verbose = args.verbose
-
-    topK = 10
-    evaluation_threads = 1  # mp.cpu_count()
-    print("NeuMF arguments: %s " % (args))
-    model_out_file = 'result/%s_att_%d_%d.h5' % (args.dataset, num_factors, time())
-
-    # Loading data
-    t1 = time()
     ds = LeaveOneDataset()
-    ds.load('./data/%s' % args.dataset)
-    # train, testRatings, testNegatives = dataset.trainMatrix, dataset.testRatings, dataset.testNegatives
-    testRatings = ds.test_pairs.values[:, :2]
-    testNegatives = ds.test_pairs.values[:, 2:]
-    num_users, num_items = ds.num_users, ds.num_items
-    train_matrix = np.array(ds.train_matrix.toarray()>0,dtype=np.float32)
-    print("Load data done [%.1f s]. #user=%d, #item=%d, #train=%d, #test=%d"
-          % (time() - t1, num_users, num_items, len(ds.train_pairs), len(testRatings)))
-
-    # Build model
+    ds.load('./data/ml100k')
+    train_matrix = ds.train_matrix.toarray()
+    user_len = np.max(np.sum(train_matrix>0,axis=1))
+    # print(user_len)
+    args = parse_args()
+    topK = 10
     sess = tf.Session()
-    model = TwoLevelAttetionModel(sess,num_users,num_items,num_factors,train_matrix,lr,reg_lambda,keep_prob)
-    # Init performance
-    (hits, ndcgs) = evaluate_model(model, testRatings, testNegatives, topK, evaluation_threads)
-    hr, ndcg = np.array(hits).mean(), np.array(ndcgs).mean()
-    print('Init: HR = %.4f, NDCG = %.4f' % (hr, ndcg))
-    best_hr, best_ndcg, best_iter = hr, ndcg, -1
-    if args.out > 0:
-        model.save_weights(model_out_file, overwrite=True)
-
-        # Training model
-    for epoch in range(num_epochs):
-        t1 = time()
-        # Generate training instances
-        user_input, item_input, labels = get_train_instances(ds.train_pairs)
-
-        # Training
-        loss = model.fit([user_input, item_input,labels],batch_size=batch_size,verbose=0)
-        t2 = time()
-
-        # Evaluation
-        if epoch % verbose == 0:
-            (hits, ndcgs) = evaluate_model(model, testRatings, testNegatives, topK, evaluation_threads)
-            hr, ndcg  = np.array(hits).mean(), np.array(ndcgs).mean()
-            print('Iteration %d [%.1f s]: HR = %.4f, NDCG = %.4f, loss = %.4f [%.1f s]'
-                  % (epoch, t2 - t1, hr, ndcg, loss, time() - t2))
-            if hr > best_hr:
-                best_hr, best_ndcg, best_iter = hr, ndcg, epoch
-                if args.out > 0:
-                    model.save_weights(model_out_file, overwrite=True)
-
-    print("End. Best Iteration %d:  HR = %.4f, NDCG = %.4f. " % (best_iter, best_hr, best_ndcg))
-    if args.out > 0:
-        print("The best Novel model is saved to %s" % (model_out_file))
-
+    model = TwoLevelAttetionModel(sess,ds.num_users,ds.num_items,args.num_factors,user_len,args.lr,args.reg_lambda,args.keep_prob)
+    init_hits,init_ndcgs = [],[]
+    start = time()
+    for batch_users, batch_items, batch_uvecs, batch_masks in generate_test_batch(train_matrix, ds.test_pairs.values,user_len):
+        scores = model.predict(batch_users, batch_items, batch_uvecs, batch_masks)
+        scores = np.reshape(scores, -1)
+        ranklist = np.argsort(-scores)[:topK]
+        init_hits.append(getHitRatio(ranklist, 0))
+        init_ndcgs.append(getNDCG(ranklist, 0))
+    init_hit = np.mean(init_hits)
+    init_ndcg = np.mean(init_ndcgs)
+    print('Init,hit@{}:{},ndcg@{}:{},{}s'.format(topK, init_hit, topK, init_ndcg,time()-start))
+    best_hit = 0
+    best_ndcg = 0
+    for epoch in range(args.epochs):
+        start = time()
+        #train
+        for batch_users, batch_items, batch_uvecs, batch_masks, batch_labels in generate_train_batch(train_matrix,ds.train_pairs.values,user_len):
+            loss,_ = model.train(batch_users,batch_items,batch_uvecs, batch_masks, batch_labels)
+        # test
+        hits = []
+        ndcgs = []
+        for batch_users, batch_items, batch_uvecs, batch_masks in generate_test_batch(train_matrix,ds.test_pairs.values,user_len):
+            scores = model.predict(batch_users,batch_items, batch_uvecs, batch_masks)
+            scores = np.reshape(scores,-1)
+            ranklist = np.argsort(-scores)[:topK]
+            hits.append(getHitRatio(ranklist,0))
+            ndcgs.append(getNDCG(ranklist,0))
+        hit = np.mean(hits)
+        ndcg = np.mean(ndcgs)
+        print('epoch:{},loss:{},hit@{}:{},ndcg@{}:{},{}s'.format(epoch,loss,topK,hit,topK,ndcg,time()-start))
+        if hit > best_hit:
+            best_hit = hit
+        if ndcg > best_ndcg:
+            best_ndcg = ndcg
+    print('best hit@{}:{},best ndcg@{}:{}'.format(topK,best_hit,topK,best_ndcg))
 
 
 
