@@ -12,9 +12,9 @@ def parse_args():
                         help='Choose a dataset.')
     parser.add_argument('--epochs', type=int, default=100,
                         help='Number of epochs.')
-    parser.add_argument('--batch_size', type=int, default=256,
+    parser.add_argument('--batch_size', type=int, default=128,
                         help='Batch size.')
-    parser.add_argument('--num_factors', type=int, default=64,
+    parser.add_argument('--num_factors', type=int, default=32,
                         help='Embedding size of MF model.')
     # parser.add_argument('--layers', nargs='?', default='[64,32,16,8]',
     #                     help="MLP layers. Note that the first layer is the concatenation of user and item embeddings. So layers[0]/2 is the embedding size.")
@@ -56,10 +56,10 @@ class TwoLevelAttetionModel:
         self.dropout = tf.placeholder(dtype=tf.float32)
         self.item_embedding = tf.Variable(tf.random_uniform(shape=(self.num_items,self.num_factors),minval=-0.1,maxval=0.1))
         self.user_embedding = tf.Variable(tf.random_uniform(shape=(self.num_users,self.num_factors),minval=-0.1,maxval=0.1))
-        self.fa_W = tf.Variable(tf.random_normal(shape=(3*self.num_factors,self.num_factors)))
+        self.fa_W = tf.Variable(tf.random_normal(shape=(2*self.num_factors,self.num_factors)))
         self.fa_b = tf.Variable(tf.constant(0.1,shape=(self.num_factors,)))
-        self.it_W = tf.Variable(tf.random_normal(shape=(3*self.num_factors,1)))
-        self.it_b = tf.Variable(tf.constant(0.1))
+        self.it_W = tf.Variable(tf.random_normal(shape=(2*self.num_factors,self.max_len)))
+        self.it_b = tf.Variable(tf.constant(0.1,shape=[self.max_len]))
         self.W1 = tf.Variable(tf.random_normal(shape=(3*self.num_factors,int(1.5*self.num_factors))))
         self.b1 = tf.Variable(tf.constant(0.1,shape=(int(1.5*self.num_factors),)))
         self.W2 = tf.Variable(tf.random_normal(shape=(int(1.5*self.num_factors),1)))
@@ -85,25 +85,33 @@ class TwoLevelAttetionModel:
         init = tf.global_variables_initializer()
         self.sess.run(init)
     def factor_attention(self,user_vec,item_vec,backets_vec,W,b):
-        attented_backets_vec =[]
-        for i in range(self.max_len):
-            fusion_vec = tf.concat([user_vec,item_vec,backets_vec[:,i,:]],axis=-1)
-            alphas = tf.nn.softmax(tf.add(tf.matmul(fusion_vec,W),b))
-            new_vec = tf.multiply(alphas,backets_vec[:,i,:])
-            attented_backets_vec.append(new_vec)
-        attented_vec = tf.concat(attented_backets_vec,axis=1)
-        attented_vec = tf.reshape(attented_vec,shape=(-1,self.max_len,self.num_factors))
+        fusion_vec = tf.concat([user_vec, item_vec], axis=-1)
+        alphas = tf.nn.softmax(tf.add(tf.matmul(fusion_vec, W), b))
+        alphas = tf.expand_dims(alphas,axis=1)
+        attented_vec = tf.multiply(alphas,backets_vec)
+        # attented_backets_vec =[]
+        # for i in range(self.max_len):
+        #     fusion_vec = tf.concat([user_vec,item_vec,backets_vec[:,i,:]],axis=-1)
+        #     alphas = tf.nn.softmax(tf.add(tf.matmul(fusion_vec,W),b))
+        #     new_vec = tf.multiply(alphas,backets_vec[:,i,:])
+        #     attented_backets_vec.append(new_vec)
+        # attented_vec = tf.concat(attented_backets_vec,axis=1)
+        # attented_vec = tf.reshape(attented_vec,shape=(-1,self.max_len,self.num_factors))
         return attented_vec
     def backets_attention(self,user_vec,item_vec,backets_vec,W,b):
-        betas = []
-        for i in range(self.max_len):
-            fusion_vec = tf.concat([user_vec, item_vec, backets_vec[:, i, :]], axis=-1)
-            beta = tf.nn.softmax(tf.add(tf.matmul(fusion_vec, W), b))
-            betas.append(beta)
-        betas = tf.concat(betas,axis=1)
-        item_attention_weights = tf.nn.softmax(betas)
-        item_attention_weights = tf.expand_dims(item_attention_weights,axis=-1)
-        aggregated_backet_vec = tf.reduce_sum(tf.multiply(item_attention_weights,backets_vec),axis=1)
+        fusion_vec = tf.concat([user_vec, item_vec], axis=-1)
+        betas = tf.nn.softmax(tf.add(tf.matmul(fusion_vec, W), b))
+        item_attention_weights = tf.expand_dims(betas, axis=-1)
+        aggregated_backet_vec = tf.reduce_sum(tf.multiply(item_attention_weights, backets_vec), axis=1)
+        # betas = []
+        # for i in range(self.max_len):
+        #     fusion_vec = tf.concat([user_vec, item_vec, backets_vec[:, i, :]], axis=-1)
+        #     beta = tf.nn.softmax(tf.add(tf.matmul(fusion_vec, W), b))
+        #     betas.append(beta)
+        # betas = tf.concat(betas,axis=1)
+        # item_attention_weights = tf.nn.softmax(betas)
+        # item_attention_weights = tf.expand_dims(item_attention_weights,axis=-1)
+        # aggregated_backet_vec = tf.reduce_sum(tf.multiply(item_attention_weights,backets_vec),axis=1)
         return aggregated_backet_vec
     def train(self,batch_users,batch_items,batch_uvecs,batch_masks,batch_labels):
         feed_dict = {self.user:batch_users,self.item:batch_items,self.backets:batch_uvecs,self.mask:batch_masks,self.y:batch_labels,self.dropout:self.keep_prob}
@@ -149,7 +157,7 @@ def get_train_instances(train_pairs):
             item_input.append(j)
             labels.append(0)
     return user_input, item_input, labels
-def generate_train_batch(train_matrix,train_pairs,user_len,batch_size=512):
+def generate_train_batch(train_matrix,train_pairs,user_len,batch_size=128):
     batch_users,batch_items,batch_uvecs,batch_masks,batch_labels = [],[],[],[],[]
     count = 0
     for pair in train_pairs:
