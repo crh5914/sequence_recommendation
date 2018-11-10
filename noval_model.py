@@ -4,6 +4,7 @@ from leave_one_dataset import LeaveOneDataset
 from time import time
 from evaluate import getHitRatio,getNDCG
 import argparse
+from dataset import DataSet
 def parse_args():
     parser = argparse.ArgumentParser(description="Run NeuMF.")
     parser.add_argument('--path', nargs='?', default='Data/',
@@ -64,7 +65,7 @@ class TwoLevelAttetionModel:
         self.b1 = tf.Variable(tf.constant(0.1,shape=(int(1.5*self.num_factors),)))
         self.W2 = tf.Variable(tf.random_normal(shape=(int(1.5*self.num_factors),1)))
         self.b2 = tf.Variable(tf.constant(0.1))
-        self.mask_vec = tf.expand_dims(tf.cast(tf.sequence_mask(self.mask,self.max_len),dtype=float),axis=-1)
+        self.mask_vec = tf.expand_dims(tf.cast(tf.sequence_mask(self.mask,self.max_len),dtype=tf.float32),axis=-1)
         self.backets_embedding = tf.nn.embedding_lookup(self.item_embedding,self.backets)
         self.backets_embedding = tf.multiply(self.mask_vec,self.backets_embedding)
         self.item_vec = tf.nn.embedding_lookup(self.item_embedding,self.item)
@@ -157,11 +158,10 @@ def get_train_instances(train_pairs):
             item_input.append(j)
             labels.append(0)
     return user_input, item_input, labels
-def generate_train_batch(train_matrix,train_pairs,user_len,batch_size=128):
+def generate_train_batch(users,items,train_matrix,user_len,item_count,batch_size=128,negative=2):
     batch_users,batch_items,batch_uvecs,batch_masks,batch_labels = [],[],[],[],[]
     count = 0
-    for pair in train_pairs:
-        u,i = pair[:2]
+    for u,i in zip(users,items):
         uvec = list(np.nonzero(train_matrix[u])[0])
         padd_len = user_len - len(uvec)
         padd_uvec = uvec + [0]*padd_len
@@ -171,13 +171,17 @@ def generate_train_batch(train_matrix,train_pairs,user_len,batch_size=128):
         batch_masks.append(len(uvec))
         batch_labels.append(1)
         count += 1
-        for j in pair[2:]:
-            batch_users.append(u)
-            batch_uvecs.append(padd_uvec)
-            batch_items.append(j)
-            batch_masks.append(len(uvec))
-            batch_labels.append(0)
-            count += 1
+        num = 0
+        while num < negative:
+            j = np.random.choice(item_count)
+            if j not in uvec:
+                batch_users.append(u)
+                batch_uvecs.append(padd_uvec)
+                batch_items.append(j)
+                batch_masks.append(len(uvec))
+                batch_labels.append(0)
+                num += 1
+                count += 1
         if count >= batch_size:
             yield batch_users,batch_items,batch_uvecs,batch_masks,batch_labels
             batch_users, batch_items, batch_uvecs, batch_masks, batch_labels = [], [], [], [], []
@@ -185,32 +189,44 @@ def generate_train_batch(train_matrix,train_pairs,user_len,batch_size=128):
     if count >= 0:
         yield batch_users, batch_items, batch_uvecs, batch_masks, batch_labels
 
-def generate_test_batch(train_matrix,test_pairs,user_len):
-    for pair in test_pairs:
+def generate_test_batch(test,train_matrix,user_len,num_items):
+    for u in test:
         batch_users, batch_items, batch_uvecs, batch_masks = [], [], [], []
-        u = pair[0]
+        i = test[u]
         uvec = list(np.nonzero(train_matrix[u])[0])
         padd_len = user_len - len(uvec)
         padd_uvec = uvec + [0]*padd_len
-        for j in pair[1:]:
+        its = list(set(range(num_items))-set(uvec))
+        batch_users.append(u)
+        batch_uvecs.append(padd_uvec)
+        batch_masks.append(len(uvec))
+        batch_items.append(i)
+        negs = np.random.choice(its,size=99)
+        for j in negs:
             batch_users.append(u)
             batch_uvecs.append(padd_uvec)
             batch_masks.append(len(uvec))
             batch_items.append(j)
         yield batch_users, batch_items, batch_uvecs, batch_masks
 if __name__ == '__main__':
-    ds = LeaveOneDataset()
-    ds.load('./data/ml100k')
-    train_matrix = ds.train_matrix.toarray()
+    # ds = LeaveOneDataset()
+    ds = DataSet('./data/ml100k.ratings')
+    ds.split()
+    # ds.load('./data/ml100k.ratings')
+    # train_matrix = ds.train_matrix.toarray()
+    train_matrix = ds.get_implicit_matrix()
+    test = ds.get_testdict()
     user_len = np.max(np.sum(train_matrix>0,axis=1))
+    num_users = ds.user_count
+    num_items = ds.item_count
     # print(user_len)
     args = parse_args()
     topK = 10
     sess = tf.Session()
-    model = TwoLevelAttetionModel(sess,ds.num_users,ds.num_items,args.num_factors,user_len,args.lr,args.reg_lambda,args.keep_prob)
+    model = TwoLevelAttetionModel(sess,num_users,num_items,args.num_factors,user_len,args.lr,args.reg_lambda,args.keep_prob)
     init_hits,init_ndcgs = [],[]
     start = time()
-    for batch_users, batch_items, batch_uvecs, batch_masks in generate_test_batch(train_matrix, ds.test_pairs.values,user_len):
+    for batch_users, batch_items, batch_uvecs, batch_masks in generate_test_batch(test,train_matrix,user_len,num_items):
         scores = model.predict(batch_users, batch_items, batch_uvecs, batch_masks)
         scores = np.reshape(scores, -1)
         ranklist = np.argsort(-scores)[:topK]
@@ -224,12 +240,12 @@ if __name__ == '__main__':
     for epoch in range(args.epochs):
         start = time()
         #train
-        for batch_users, batch_items, batch_uvecs, batch_masks, batch_labels in generate_train_batch(train_matrix,ds.train_pairs.values,user_len):
-            loss,_ = model.train(batch_users,batch_items,batch_uvecs, batch_masks, batch_labels)
+        for batch_users, batch_items, batch_uvecs, batch_masks, batch_labels in generate_train_batch(ds.users,ds.items,train_matrix,user_len,num_items):
+            loss = model.train(batch_users,batch_items,batch_uvecs, batch_masks, batch_labels)
         # test
         hits = []
         ndcgs = []
-        for batch_users, batch_items, batch_uvecs, batch_masks in generate_test_batch(train_matrix,ds.test_pairs.values,user_len):
+        for batch_users, batch_items, batch_uvecs, batch_masks in generate_test_batch(test,train_matrix,user_len,num_items):
             scores = model.predict(batch_users,batch_items, batch_uvecs, batch_masks)
             scores = np.reshape(scores,-1)
             ranklist = np.argsort(-scores)[:topK]
