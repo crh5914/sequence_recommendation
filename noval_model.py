@@ -118,7 +118,9 @@ def get_train_batch(train_pairs,train_matrix,user_len,batch_size=256):
     count = 0
     for pair in train_pairs:
         u,i = pair[0],pair[1]
-        uvec = list(np.nonzero(train_matrix[u])[0])
+        row = train_matrix[u].copy()
+        row[i] = 0
+        uvec = list(np.nonzero(row)[0])
         padd_len = user_len - len(uvec)
         padd_uvec = uvec + [0]*padd_len
         batch_users.append(u)
