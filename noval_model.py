@@ -72,7 +72,7 @@ class TwoLevelAttetionModel:
         self.user_vec = tf.nn.embedding_lookup(self.user_embedding,self.user)
         self.factor_attented_backets_vec = self.factor_attention(self.user_vec,self.item_vec,self.backets_embedding)
         self.full_attented_backet_vec = self.backets_attention(self.user_vec,self.item_vec,self.factor_attented_backets_vec)
-        self.final_vec = tf.concat([self.item_vec,self.user_vec,self.full_attented_backet_vec],axis=1)
+        self.final_vec = tf.concat([tf.multiply(self.item_vec,self.user_vec),tf.multiply(self.item_vec,self.full_attented_backet_vec)],axis=1)
         #self.f1 = tf.nn.relu(tf.add(tf.matmul(self.final_vec,self.W1),self.b1))
         #self.f1 = tf.nn.dropout(self.f1,self.dropout)
         #self.y_ = tf.nn.sigmoid(tf.reduce_sum(tf.add(tf.matmul(self.f1,self.W2),self.b2),axis=1))
