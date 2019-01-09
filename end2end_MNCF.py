@@ -161,7 +161,7 @@ def main():
     init = tf.global_variables_initializer()
     sess.run(init)
     for epoch in range(args.epochs):
-        loss = []
+        loss = 0
         for ubacket,ibacket,users,items,ratings in ds.generate_train_batch():
             feed_dict = {model.uid:users,model.iid:items,model.label:ratings,model.ubacket:ubacket,model.ibacket:ibacket}
             _,bloss = sess.run([model.train_step,model.loss],feed_dict=feed_dict)
@@ -174,7 +174,7 @@ def main():
             err = np.array(pred) - np.array(ratings)
             mse += np.sum(np.square(err))
             mae += np.sum(np.abs(err))
-        rmse,mae = np.sqrt(mse/len(self.test_data)),mae/len(self.test_data) 
+        rmse,mae = np.sqrt(mse/len(ds.test_data)),mae/len(ds.test_data) 
         print('epoch:{},train rmse:{},test rmse:{},test mae:{}'.format(epoch+1,train_rmse,rmse,mae))
         logger.info('epoch:{},train rmse:{},test rmse:{},test mae:{}'.format(epoch+1,train_rmse,rmse,mae))
 if __name__ == '__main__':
