@@ -20,7 +20,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run MLP.")
     parser.add_argument('--path', nargs='?', default='Data/',
                         help='Input data path.')
-    parser.add_argument('--dataset', nargs='?', default='ml-1m',
+    parser.add_argument('--dataset', nargs='?', default='ml1m',
                         help='Choose a dataset.')
     parser.add_argument('--epochs', type=int, default=100,
                         help='Number of epochs.')
@@ -76,16 +76,20 @@ def get_model(num_users,num_items,ratings,layers,l2_param):
 	decoder = Model(input_a,decoded_a)
 	# decoder.compile(optimizer='adadelta',loss=recostruction_loss)
 	return model,encoder,decoder,predictor
-
-def recostruction_loss(true_y,pred_y):
-    diff = K.square(true_y - pred_y)
-    weight =K.cast(true_y>0,dtype='float32')
-    weighted_diff = diff * weight
-    return K.mean(K.sum(weighted_diff,axis=1))
-def edge_wise_loss(true_y,pred_y):
-    """ 1st order proximity
-    """
-    return K.mean(K.square(pred_y-true_y))
+def binary_reconstruction_loss(true_y,pred_y):
+    binary_loss = K.cast(K.greater_equal(pred_y,0),'float32')-pred_y*true_y+K.log(1+K.exp(-K.abs(pred_y)))
+    mask = K.cast(true_y>0,dtype='float32')
+    binary_loss = binary_loss*mask
+    return K.mean(K.sum(binary_loss,axis=1)/K.sum(mask,axis=1))
+#def recostruction_loss(true_y,pred_y):
+#    #diff = K.square(true_y - pred_y)
+#    weight =K.cast(true_y>0,dtype='float32')
+#    weighted_diff = diff * weight
+#    return K.mean(K.sum(weighted_diff,axis=1))
+#def edge_wise_loss(true_y,pred_y):
+#    """ 1st order proximity
+#    """
+#    return K.mean(K.square(pred_y-true_y))
 
 def get_train_instances(train_pairs,ratings,batch_size=512):
 	user_input, item_input,user_vec,item_vec,labels = [],[],[],[],[]
@@ -148,13 +152,13 @@ if __name__ == '__main__':
     # Build model
 	model,encoder,decoder,predictor = get_model(num_users, num_items,ratings,layers, regs)
 	if learner.lower() == "adagrad": 
-		model.compile(optimizer=Adagrad(lr=learning_rate),loss=['kullback_leibler_divergence','kullback_leibler_divergence','binary_crossentropy'])
+		model.compile(optimizer=Adagrad(lr=learning_rate),loss=[binary_reconstruction_loss,binary_reconstruction_loss,'binary_crossentropy'])
 	elif learner.lower() == "rmsprop":
-		model.compile(optimizer=RMSprop(lr=learning_rate),loss=[recostruction_loss,recostruction_loss,'binary_crossentropy'])
+		model.compile(optimizer=RMSprop(lr=learning_rate),loss=[binary_reconstruction_loss,binary_reconstruction_loss,'binary_crossentropy'])
 	elif learner.lower() == "adam":
-		model.compile(optimizer=Adam(lr=learning_rate),loss=[recostruction_loss,recostruction_loss,'binary_crossentropy'])
+		model.compile(optimizer=Adam(lr=learning_rate),loss=[binary_reconstruction_loss,binary_reconstruction_loss,'binary_crossentropy'])
 	else:
-		model.compile(optimizer=SGD(lr=learning_rate),loss=[recostruction_loss,recostruction_loss,'binary_crossentropy'])    
+		model.compile(optimizer=SGD(lr=learning_rate),loss=[binary_reconstruction_loss,binary_reconstruction_loss,'binary_crossentropy'])    
     
     # Check Init performance
 	t1 = time()
